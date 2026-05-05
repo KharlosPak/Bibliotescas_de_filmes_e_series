@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    /* Configurações de Linguagem e Ambiente */
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+
+    /* Módulos e Resolução */
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    /* Tipos Nativos */
+    "types": ["bun-types"],
+
+    /* Restrições e Segurança */
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitAny": true
+  },
+  "include": [
+    "src/**/*" /* Inclui todo o teu código fonte */,
+    "drizzle.config.ts" /* CRUCIAL: Resolve o erro vermelho no config do Drizzle */,
+    ".env" /* Opcional: Ajuda na detecção de variáveis de ambiente */
+  ],
+  "exclude": ["node_modules"]
+}
