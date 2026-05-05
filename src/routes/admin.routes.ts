@@ -1,59 +1,47 @@
 import { Elysia, t } from "elysia";
-import { db, contents } from "../config/db";
 import { authGuard } from "../middlewares/auth.guard";
-import { eq } from "drizzle-orm";
+import { AdminService } from "../services/admin.service";
 
-export const adminRoutes = new Elysia({ prefix: "/admin" })
+export const adminRoutes = new Elysia({ prefix: "/admin", tags: ["Administração"] })
   .use(authGuard)
   .onBeforeHandle(({ userRole, set }: any) => {
     if (userRole !== "admin") {
       set.status = 403;
       return {
         error: "Forbidden",
-        message:
-          "Acesso negado. Esta funcionalidade é exclusiva para administradores.",
+        message: "Acesso negado. Esta funcionalidade é exclusiva para administradores.",
         code: "ADMIN_REQUIRED",
       };
     }
   })
 
-  .get("/content", async () => {
-    return await db.select().from(contents);
-  })
+  .get(
+    "/content",
+    async () => {
+      return await AdminService.getAllContent();
+    },
+    {
+      detail: { summary: "Listar todo o catálogo (Admin)", security: [{ bearerAuth: [] }] },
+    },
+  )
 
   .post(
     "/content",
     async ({ body, set }) => {
-      try {
-        const [newContent] = await db
-          .insert(contents)
-          .values({
-            title: body.title,
-            type: body.type,
-            genre: body.genre,
-            synopsis: body.synopsis,
-            releaseYear: body.releaseYear,
-          })
-          .returning();
-
-        set.status = 201;
-        return {
-          message: "Conteúdo adicionado com sucesso!",
-          data: newContent,
-        };
-      } catch (error) {
-        set.status = 500;
-        return { error: "Erro ao adicionar conteúdo ao catálogo." };
-      }
+      const newContent = await AdminService.createContent(body as any);
+      set.status = 201;
+      return { message: "Conteúdo adicionado ao catálogo!", data: newContent };
     },
     {
       body: t.Object({
-        title: t.String(),
+        title: t.String({ minLength: 1 }),
         type: t.Union([t.Literal("movie"), t.Literal("series")]),
         genre: t.Optional(t.String()),
         synopsis: t.Optional(t.String()),
-        releaseYear: t.Optional(t.Integer()),
+        imageUrl: t.Optional(t.String({ description: "URL da capa/poster" })),
+        releaseYear: t.Optional(t.Integer({ minimum: 1888, maximum: 2100 })),
       }),
+      detail: { summary: "Adicionar conteúdo ao catálogo", security: [{ bearerAuth: [] }] },
     },
   )
 
@@ -61,16 +49,15 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     "/content/:id",
     async ({ params, body, set }) => {
       const id = parseInt(params.id);
+      if (isNaN(id)) {
+        set.status = 400;
+        return { error: "ID inválido." };
+      }
 
-      const [updated] = await db
-        .update(contents)
-        .set(body)
-        .where(eq(contents.id, id))
-        .returning();
-
+      const updated = await AdminService.updateContent(id, body as any);
       if (!updated) {
         set.status = 404;
-        return { error: "Conteúdo não encontrado para atualizar." };
+        return { error: "Conteúdo não encontrado." };
       }
 
       return { message: "Conteúdo atualizado!", data: updated };
@@ -82,8 +69,10 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
         type: t.Optional(t.Union([t.Literal("movie"), t.Literal("series")])),
         genre: t.Optional(t.String()),
         synopsis: t.Optional(t.String()),
-        releaseYear: t.Optional(t.Integer()),
+        imageUrl: t.Optional(t.String()),
+        releaseYear: t.Optional(t.Integer({ minimum: 1888, maximum: 2100 })),
       }),
+      detail: { summary: "Editar conteúdo", security: [{ bearerAuth: [] }] },
     },
   )
 
@@ -91,20 +80,21 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     "/content/:id",
     async ({ params, set }) => {
       const id = parseInt(params.id);
-
-      const [deleted] = await db
-        .delete(contents)
-        .where(eq(contents.id, id))
-        .returning();
-
-      if (!deleted) {
-        set.status = 404;
-        return { error: "Conteúdo não encontrado para remover." };
+      if (isNaN(id)) {
+        set.status = 400;
+        return { error: "ID inválido." };
       }
 
-      return { message: "Conteúdo removido com sucesso!" };
+      const deleted = await AdminService.deleteContent(id);
+      if (!deleted) {
+        set.status = 404;
+        return { error: "Conteúdo não encontrado." };
+      }
+
+      return { message: "Conteúdo removido do catálogo." };
     },
     {
       params: t.Object({ id: t.String() }),
+      detail: { summary: "Remover conteúdo do catálogo", security: [{ bearerAuth: [] }] },
     },
   );

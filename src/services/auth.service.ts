@@ -1,63 +1,92 @@
-import { db, users } from "../config/db";
-import { eq } from "drizzle-orm";
+import { db, users, refreshTokens } from "../config/db";
+import { eq, and, gt } from "drizzle-orm";
+import { env } from "../config/env";
+import { randomBytes } from "crypto";
 
-/**
- * AUTH SERVICE
- * Lógica de negócio para autenticação e gestão de contas.
- */
 export const AuthService = {
-  /**
-   * PROCURAR UTILIZADOR POR EMAIL
-   */
   async findUserByEmail(email: string) {
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
-
+    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     return user;
   },
 
-  /**
-   * CRIAR NOVO UTILIZADOR
-   * Realiza o hash da password e define a role padrão.
-   */
-  async createUser(data: typeof users.$inferInsert) {
-    // 1. Encriptar a password antes de guardar
-    const hashedPassword = await Bun.password.hash(data.password);
+  async findUserById(id: number) {
+    const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return user;
+  },
 
-    // 2. Inserir na base de dados
+  async createUser(data: { name: string; email: string; password: string }) {
+    const hashedPassword = await Bun.password.hash(data.password, {
+      algorithm: "argon2id",
+      memoryCost: 65536,
+      timeCost: 2,
+    });
     const [newUser] = await db
       .insert(users)
-      .values({
-        ...data,
-        password: hashedPassword,
-        role: data.role || "user",
-      })
+      .values({ name: data.name, email: data.email, password: hashedPassword, role: "user" })
       .returning();
-
     return newUser;
   },
 
-  /**
-   * VERIFICAR PASSWORD
-   * Compara o texto simples com o hash guardado.
-   */
-  async verifyPassword(password: string, hash: string) {
-    return await Bun.password.verify(password, hash);
+  async updateProfile(id: number, data: { name?: string; email?: string }) {
+    const [updated] = await db
+      .update(users)
+      .set(data)
+      .where(eq(users.id, id))
+      .returning();
+    return updated;
   },
 
-  /**
-   * PROCURAR UTILIZADOR POR ID
-   */
-  async findUserById(id: number) {
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, id))
-      .limit(1);
+  async updatePassword(id: number, newPassword: string) {
+    const hashed = await Bun.password.hash(newPassword, {
+      algorithm: "argon2id",
+      memoryCost: 65536,
+      timeCost: 2,
+    });
+    await db.update(users).set({ password: hashed }).where(eq(users.id, id));
+  },
 
-    return user;
+  async verifyPassword(password: string, hash: string) {
+    try {
+      return await Bun.password.verify(password, hash);
+    } catch {
+      return false;
+    }
+  },
+
+  // REFRESH TOKENS
+  async createRefreshToken(userId: number): Promise<string> {
+    const token = randomBytes(64).toString("hex");
+    const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_EXPIRES_IN_SECONDS * 1000);
+    await db.insert(refreshTokens).values({ userId, token, expiresAt });
+    return token;
+  },
+
+  async findRefreshToken(token: string) {
+    const [rt] = await db
+      .select()
+      .from(refreshTokens)
+      .where(
+        and(
+          eq(refreshTokens.token, token),
+          eq(refreshTokens.revoked, false),
+          gt(refreshTokens.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return rt;
+  },
+
+  async revokeRefreshToken(token: string) {
+    await db
+      .update(refreshTokens)
+      .set({ revoked: true })
+      .where(eq(refreshTokens.token, token));
+  },
+
+  async revokeAllUserTokens(userId: number) {
+    await db
+      .update(refreshTokens)
+      .set({ revoked: true })
+      .where(eq(refreshTokens.userId, userId));
   },
 };

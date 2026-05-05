@@ -3,39 +3,33 @@ import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
 import { env } from "./config/env";
 
-// Importação dos grupos de rotas
 import { authRoutes } from "./routes/auth.routes";
 import { usersRoutes } from "./routes/user.routes";
 import { adminRoutes } from "./routes/admin.routes";
+import { catalogRoutes } from "./routes/catalog.routes";
 
-// DEBUG DE CONEXÃO
-console.log("--- DEBUG DE AMBIENTE ---");
-console.log(
-  "Variável DATABASE_URL (via env):",
-  env.DATABASE_URL?.split("@")[1] || "NÃO ENCONTRADA",
-);
-console.log(
-  "Variável DATABASE_URL (via process.env):",
-  process.env.DATABASE_URL?.split("@")[1] || "NÃO ENCONTRADA",
-);
-console.log(
-  "Utilizador do Sistema (whoami):",
-  process.env.USER || process.env.USERNAME,
-);
-console.log("-------------------------");
-
-// Inicialização da aplicação
 const app = new Elysia()
-  // 1. Middlewares Globais
-  .use(cors()) // Permite que o Frontend (React/Vue/Angular) comunique com a API
+  .use(
+    cors({
+      origin: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    }),
+  )
   .use(
     swagger({
+      path: "/swagger",
       documentation: {
         info: {
-          title: "Streaming API",
-          version: "1.0.0",
+          title: "Streaming Library API",
+          version: "2.0.0",
           description:
-            "API para gestão de catálogo e bibliotecas pessoais de filmes e séries.",
+            "API para gestão de biblioteca pessoal de filmes e séries.\n\n" +
+            "**Estados de visualização:**\n" +
+            "- `to_watch` — Por Visualizar\n" +
+            "- `watching` — A Visualizar\n" +
+            "- `watched` — Visualizado\n\n" +
+            "**Autenticação:** Bearer Token JWT (válido 7 dias). Use `POST /auth/login` para obter o token.",
         },
         components: {
           securitySchemes: {
@@ -46,31 +40,39 @@ const app = new Elysia()
             },
           },
         },
+        tags: [
+          { name: "Autenticação", description: "Registo, login, refresh token e gestão de perfil" },
+          { name: "Catálogo Público", description: "Pesquisa e consulta do catálogo (sem autenticação)" },
+          { name: "Biblioteca do Utilizador", description: "Gestão da biblioteca pessoal de filmes e séries" },
+          { name: "Administração", description: "Gestão do catálogo global (apenas administradores)" },
+        ],
       },
     }),
   )
 
-  // 2. Rota de Healthcheck (Raiz)
-  .get("/", () => {
-    return {
+  .get(
+    "/",
+    () => ({
+      name: "Streaming Library API",
+      version: "2.0.0",
       status: "Online",
-      message: "Bem-vindo à Streaming API!",
-      docs: "/swagger", // Indica onde a documentação está
-    };
-  })
+      docs: "/swagger",
+      endpoints: {
+        auth: "/auth",
+        catalog: "/catalog",
+        library: "/users/library",
+        admin: "/admin/content",
+      },
+    }),
+    { detail: { summary: "Healthcheck", tags: ["Autenticação"] } },
+  )
 
-  // 3. Montagem dos Controladores/Rotas
-  .use(authRoutes) // Rotas: /auth/register, /auth/login, /auth/me
-  .use(usersRoutes) // Rotas: /users/library...
-  .use(adminRoutes) // Rotas: /admin/content...
+  .use(authRoutes)
+  .use(usersRoutes)
+  .use(adminRoutes)
+  .use(catalogRoutes)
 
-  // 4. Iniciar o Servidor
-  .listen(env.PORT);
+  .listen({ port: env.PORT, hostname: "0.0.0.0" });
 
-// Mensagens de Sucesso no Terminal
-console.log(
-  ` Servidor a correr em http://${app.server?.hostname}:${app.server?.port}`,
-);
-console.log(
-  ` Documentação Interativa em http://${app.server?.hostname}:${app.server?.port}/swagger`,
-);
+console.log(`\n🚀 Servidor a correr em http://0.0.0.0:${app.server?.port}`);
+console.log(`📚 Documentação: http://0.0.0.0:${app.server?.port}/swagger\n`);

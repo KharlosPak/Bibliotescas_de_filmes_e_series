@@ -1,161 +1,154 @@
 import { Elysia, t } from "elysia";
-import { db, userLibrary, contents } from "../config/db";
 import { authGuard } from "../middlewares/auth.guard";
-import { eq, and } from "drizzle-orm";
+import { UserService } from "../services/user.service";
+import { AdminService } from "../services/admin.service";
 
-/**
- * ROTAS DE UTILIZADOR
- * Gestão da biblioteca pessoal e consulta de conteúdos.
- */
-export const usersRoutes = new Elysia({ prefix: "/users" })
+const watchStatusValues = ["to_watch", "watching", "watched"] as const;
+
+export const usersRoutes = new Elysia({ prefix: "/users", tags: ["Biblioteca do Utilizador"] })
   .use(authGuard)
-
-  /**
-   * LISTAR MINHA BIBLIOTECA
-   * Retorna os conteúdos da lista do utilizador com os nomes e detalhes.
-   */
-  .get("/library", async ({ userId, set }) => {
-    try {
-      if (!userId) {
-        set.status = 401;
-        return { error: "Utilizador não identificado." };
-      }
-
-      // Fazemos um Join para trazer os dados do conteúdo junto com o estado 'visto'
-      const library = await db
-        .select({
-          id: contents.id,
-          title: contents.title,
-          type: contents.type,
-          genre: contents.genre,
-          watched: userLibrary.watched,
-          addedAt: userLibrary.addedAt,
-        })
-        .from(userLibrary)
-        .innerJoin(contents, eq(userLibrary.contentId, contents.id))
-        .where(eq(userLibrary.userId, Number(userId)));
-
-      return library;
-    } catch (error) {
-      set.status = 500;
-      return { error: "Erro ao carregar a biblioteca." };
+  .onBeforeHandle(({ userId, set }: any) => {
+    if (!userId) {
+      set.status = 401;
+      return {
+        error: "Unauthorized",
+        message: "Token inválido, expirado ou não fornecido. Faça login novamente.",
+      };
     }
   })
 
-  /**
-   * ADICIONAR À BIBLIOTECA
-   */
+  .get(
+    "/stats",
+    async ({ userId }) => {
+      return await UserService.getStats(userId!);
+    },
+    {
+      detail: {
+        summary: "Estatísticas da biblioteca",
+        description: "Retorna contagem de filmes/séries por estado: por visualizar, a visualizar e visualizado.",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+  )
+
+  .get(
+    "/library",
+    async ({ userId, query, set }) => {
+      const status = query.status as "to_watch" | "watching" | "watched" | undefined;
+      if (status && !watchStatusValues.includes(status)) {
+        set.status = 400;
+        return { error: `Status inválido. Use: ${watchStatusValues.join(", ")}` };
+      }
+      return await UserService.getUserLibrary(userId!, status);
+    },
+    {
+      query: t.Object({
+        status: t.Optional(
+          t.Union([t.Literal("to_watch"), t.Literal("watching"), t.Literal("watched")]),
+        ),
+      }),
+      detail: {
+        summary: "Listar biblioteca pessoal",
+        description: "Retorna todos os conteúdos da biblioteca, com filtro opcional por estado.",
+        security: [{ bearerAuth: [] }],
+      },
+    },
+  )
+
   .post(
     "/library",
     async ({ userId, body, set }) => {
-      const { contentId } = body;
-
-      // 1. Verificar se o conteúdo existe no catálogo global
-      const [contentExists] = await db
-        .select()
-        .from(contents)
-        .where(eq(contents.id, contentId))
-        .limit(1);
-
-      if (!contentExists) {
+      const content = await AdminService.findById(body.contentId);
+      if (!content) {
         set.status = 404;
         return { error: "Conteúdo não encontrado no catálogo." };
       }
 
-      // 2. Verificar duplicados na biblioteca do user
-      const [alreadyInLibrary] = await db
-        .select()
-        .from(userLibrary)
-        .where(
-          and(
-            eq(userLibrary.userId, Number(userId)),
-            eq(userLibrary.contentId, contentId),
-          ),
-        )
-        .limit(1);
-
-      if (alreadyInLibrary) {
-        set.status = 400;
+      const existing = await UserService.checkInLibrary(userId!, body.contentId);
+      if (existing) {
+        set.status = 409;
         return { error: "Este conteúdo já está na tua biblioteca." };
       }
 
-      // 3. Inserir
-      await db.insert(userLibrary).values({
-        userId: Number(userId),
-        contentId,
-        watched: false,
-      });
-
+      const entry = await UserService.addToLibrary(userId!, body.contentId, body.status ?? "to_watch");
       set.status = 201;
-      return { message: "Adicionado à tua lista com sucesso!" };
+      return {
+        message: "Adicionado à biblioteca com sucesso!",
+        data: { ...entry, content: { id: content.id, title: content.title, type: content.type } },
+      };
     },
     {
       body: t.Object({
-        contentId: t.Integer(),
+        contentId: t.Integer({ minimum: 1 }),
+        status: t.Optional(
+          t.Union([t.Literal("to_watch"), t.Literal("watching"), t.Literal("watched")]),
+        ),
       }),
+      detail: {
+        summary: "Adicionar à biblioteca",
+        description: "Adiciona um filme ou série com o estado: 'to_watch' (por ver), 'watching' (a ver), 'watched' (visto).",
+        security: [{ bearerAuth: [] }],
+      },
     },
   )
 
-  /**
-   * ATUALIZAR STATUS (Visto/Não Visto)
-   */
   .patch(
     "/library/:contentId",
     async ({ userId, params, body, set }) => {
       const contentId = parseInt(params.contentId);
+      if (isNaN(contentId)) {
+        set.status = 400;
+        return { error: "ID de conteúdo inválido." };
+      }
 
-      const updated = await db
-        .update(userLibrary)
-        .set({ watched: body.watched })
-        .where(
-          and(
-            eq(userLibrary.userId, Number(userId)),
-            eq(userLibrary.contentId, contentId),
-          ),
-        )
-        .returning();
-
-      if (updated.length === 0) {
+      const updated = await UserService.updateStatus(userId!, contentId, body.status);
+      if (!updated) {
         set.status = 404;
         return { error: "Conteúdo não encontrado na tua biblioteca." };
       }
 
-      return {
-        message: `Estado atualizado para: ${body.watched ? "Visto" : "Pendente"}`,
+      const labels: Record<string, string> = {
+        to_watch: "Por Visualizar",
+        watching: "A Visualizar",
+        watched: "Visualizado",
       };
+
+      return { message: `Estado atualizado para: ${labels[body.status]}`, data: updated };
     },
     {
       params: t.Object({ contentId: t.String() }),
-      body: t.Object({ watched: t.Boolean() }),
+      body: t.Object({
+        status: t.Union([t.Literal("to_watch"), t.Literal("watching"), t.Literal("watched")]),
+      }),
+      detail: {
+        summary: "Atualizar estado de visualização",
+        security: [{ bearerAuth: [] }],
+      },
     },
   )
 
-  /**
-   * REMOVER DA BIBLIOTECA
-   */
   .delete(
     "/library/:contentId",
     async ({ userId, params, set }) => {
       const contentId = parseInt(params.contentId);
-
-      const deleted = await db
-        .delete(userLibrary)
-        .where(
-          and(
-            eq(userLibrary.userId, Number(userId)),
-            eq(userLibrary.contentId, contentId),
-          ),
-        )
-        .returning();
-
-      if (deleted.length === 0) {
-        set.status = 404;
-        return { error: "Conteúdo não estava na tua biblioteca." };
+      if (isNaN(contentId)) {
+        set.status = 400;
+        return { error: "ID de conteúdo inválido." };
       }
 
-      return { message: "Removido da tua biblioteca." };
+      const deleted = await UserService.removeFromLibrary(userId!, contentId);
+      if (!deleted) {
+        set.status = 404;
+        return { error: "Conteúdo não encontrado na tua biblioteca." };
+      }
+
+      return { message: "Removido da biblioteca com sucesso." };
     },
     {
       params: t.Object({ contentId: t.String() }),
+      detail: {
+        summary: "Remover da biblioteca",
+        security: [{ bearerAuth: [] }],
+      },
     },
   );

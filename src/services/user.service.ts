@@ -1,97 +1,84 @@
 import { db, userLibrary, contents } from "../config/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 
-/**
- * USER SERVICE
- * Gere a biblioteca pessoal e interações do utilizador com o catálogo.
- */
+export type WatchStatus = "to_watch" | "watching" | "watched";
+
 export const UserService = {
-  /**
-   * OBTER BIBLIOTECA DO UTILIZADOR
-   * Realiza um Inner Join para trazer os dados do filme/série.
-   */
-  async getUserLibrary(userId: number) {
-    return await db
+  async getUserLibrary(userId: number, statusFilter?: WatchStatus) {
+    const query = db
       .select({
-        id: contents.id,
+        libraryId: userLibrary.id,
+        contentId: contents.id,
         title: contents.title,
         type: contents.type,
         genre: contents.genre,
         synopsis: contents.synopsis,
-        watched: userLibrary.watched,
+        imageUrl: contents.imageUrl,
+        releaseYear: contents.releaseYear,
+        status: userLibrary.status,
         addedAt: userLibrary.addedAt,
+        updatedAt: userLibrary.updatedAt,
       })
       .from(userLibrary)
       .innerJoin(contents, eq(userLibrary.contentId, contents.id))
-      .where(eq(userLibrary.userId, userId));
+      .where(
+        statusFilter
+          ? and(eq(userLibrary.userId, userId), eq(userLibrary.status, statusFilter))
+          : eq(userLibrary.userId, userId),
+      );
+
+    return await query;
   },
 
-  /**
-   * ADICIONAR CONTEÚDO À BIBLIOTECA
-   */
-  async addToLibrary(userId: number, contentId: number) {
+  async addToLibrary(userId: number, contentId: number, status: WatchStatus = "to_watch") {
     const [entry] = await db
       .insert(userLibrary)
-      .values({
-        userId,
-        contentId,
-        watched: false,
-      })
+      .values({ userId, contentId, status })
       .returning();
-
     return entry;
   },
 
-  /**
-   * ATUALIZAR ESTADO DE VISUALIZAÇÃO
-   */
-  async updateWatchStatus(userId: number, contentId: number, watched: boolean) {
+  async updateStatus(userId: number, contentId: number, status: WatchStatus) {
     const [updated] = await db
       .update(userLibrary)
-      .set({ watched })
-      .where(
-        and(
-          eq(userLibrary.userId, userId),
-          eq(userLibrary.contentId, contentId),
-        ),
-      )
+      .set({ status, updatedAt: new Date() })
+      .where(and(eq(userLibrary.userId, userId), eq(userLibrary.contentId, contentId)))
       .returning();
-
     return updated;
   },
 
-  /**
-   * REMOVER DA BIBLIOTECA
-   */
   async removeFromLibrary(userId: number, contentId: number) {
     const [deleted] = await db
       .delete(userLibrary)
-      .where(
-        and(
-          eq(userLibrary.userId, userId),
-          eq(userLibrary.contentId, contentId),
-        ),
-      )
+      .where(and(eq(userLibrary.userId, userId), eq(userLibrary.contentId, contentId)))
       .returning();
-
     return deleted;
   },
 
-  /**
-   * VERIFICAR SE JÁ EXISTE NA BIBLIOTECA
-   */
   async checkInLibrary(userId: number, contentId: number) {
     const [exists] = await db
       .select()
       .from(userLibrary)
-      .where(
-        and(
-          eq(userLibrary.userId, userId),
-          eq(userLibrary.contentId, contentId),
-        ),
-      )
+      .where(and(eq(userLibrary.userId, userId), eq(userLibrary.contentId, contentId)))
       .limit(1);
-
     return exists;
+  },
+
+  async getStats(userId: number) {
+    const rows = await db
+      .select({
+        status: userLibrary.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(userLibrary)
+      .where(eq(userLibrary.userId, userId))
+      .groupBy(userLibrary.status);
+
+    const stats = { to_watch: 0, watching: 0, watched: 0, total: 0 };
+    for (const row of rows) {
+      stats[row.status] = row.count;
+      stats.total += row.count;
+    }
+    return stats;
   },
 };

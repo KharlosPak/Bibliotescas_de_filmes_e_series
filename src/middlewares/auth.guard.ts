@@ -10,35 +10,31 @@ export const authGuard = new Elysia({ name: "middleware.auth" })
       name: "jwt",
       secret: env.JWT_SECRET,
       schema: t.Object({
-        userId: t.Optional(t.Numeric()),
         sub: t.Optional(t.String()),
         role: t.Optional(t.String()),
-        userRole: t.Optional(t.String()),
+        exp: t.Optional(t.Number()),
       }),
     }),
   )
   .derive({ as: "global" }, async ({ jwt, bearer }) => {
     if (!bearer) {
-      return {
-        userId: null as number | null,
-        userRole: null as string | null,
-      };
+      return { userId: null as number | null, userRole: null as string | null };
     }
 
     const payload = await jwt.verify(bearer);
 
-    if (!payload || (!payload.userId && !payload.sub)) {
-      return {
-        userId: null as number | null,
-        userRole: null as string | null,
-      };
+    if (!payload || !payload.sub) {
+      return { userId: null as number | null, userRole: null as string | null };
     }
 
-    const id = payload.userId || payload.sub;
+    // Verificar expiração manual (compatibilidade)
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
+      return { userId: null as number | null, userRole: null as string | null };
+    }
 
     return {
-      userId: id ? Number(id) : null,
-      userRole: (payload.role || payload.userRole || "user") as string,
+      userId: Number(payload.sub),
+      userRole: (payload.role || "user") as string,
     };
   })
   .onBeforeHandle(({ userId, set }) => {
@@ -46,8 +42,7 @@ export const authGuard = new Elysia({ name: "middleware.auth" })
       set.status = 401;
       return {
         error: "Unauthorized",
-        message:
-          "Não autorizado. Por favor, faça login para aceder a este recurso.",
+        message: "Token inválido, expirado ou não fornecido. Faça login novamente.",
       };
     }
   });

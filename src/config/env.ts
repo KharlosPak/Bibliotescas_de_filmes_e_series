@@ -1,14 +1,14 @@
-if (!process.env.DATABASE_URL) {
-  throw new Error(" DATABASE_URL não encontrada no ficheiro .env");
-}
-
-if (!process.env.JWT_SECRET) {
-  throw new Error(" JWT_SECRET não encontrada no ficheiro .env");
-}
+const required = (key: string): string => {
+  const value = process.env[key];
+  if (!value) throw new Error(`Variável de ambiente obrigatória não encontrada: ${key}`);
+  return value;
+};
 
 export const env = {
-  PORT: process.env.PORT || 5000,
-  DATABASE_URL: process.env.DATABASE_URL as string,
-  JWT_SECRET: process.env.JWT_SECRET as string,
+  PORT: Number(process.env.PORT) || 5000,
   NODE_ENV: process.env.NODE_ENV || "development",
+  DATABASE_URL: required("DATABASE_URL"),
+  JWT_SECRET: required("JWT_SECRET"),
+  JWT_EXPIRES_IN_SECONDS: 7 * 24 * 60 * 60,       // 7 dias
+  REFRESH_TOKEN_EXPIRES_IN_SECONDS: 30 * 24 * 60 * 60, // 30 dias
 } as const;

@@ -1,110 +1,56 @@
 import { Elysia, t } from "elysia";
-import { db, users } from "../config/db";
 import { authGuard } from "../middlewares/auth.guard";
-import { eq } from "drizzle-orm";
+import { AuthService } from "../services/auth.service";
+import { env } from "../config/env";
 
-/**
- * ROTAS DE AUTENTICAÇÃO
- * Gerencia o registo, login e validação de sessão.
- */
-export const authRoutes = new Elysia({ prefix: "/auth" })
-  // O authGuard injeta as configurações de JWT (sign, verify) e protege rotas se necessário
-  .use(authGuard)
+export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"] })
 
-  /**
-   * REGISTO DE UTILIZADOR
-   */
+  // ── Rotas públicas (sem autenticação) ───────────────────────────────────────
   .post(
     "/register",
     async ({ body, set }) => {
-      const { name, email, password } = body;
-
-      try {
-        // 1. Verificar se o email já existe
-        const [existingUser] = await db
-          .select()
-          .from(users)
-          .where(eq(users.email, email))
-          .limit(1);
-
-        if (existingUser) {
-          set.status = 400;
-          return { error: "Este email já está em uso." };
-        }
-
-        // 2. Encriptar a senha usando a função nativa do Bun (Argon2 por padrão)
-        const hashedPassword = await Bun.password.hash(password);
-
-        // 3. Inserir no banco de dados
-        await db.insert(users).values({
-          name,
-          email,
-          password: hashedPassword,
-          role: "user",
-        });
-
-        set.status = 201;
-        return { message: "Utilizador registado com sucesso!" };
-      } catch (error) {
-        set.status = 500;
-        return { error: "Erro interno ao processar o registo." };
+      const existing = await AuthService.findUserByEmail(body.email);
+      if (existing) {
+        set.status = 409;
+        return { error: "Este email já está em uso." };
       }
+      await AuthService.createUser(body);
+      set.status = 201;
+      return { message: "Conta criada com sucesso! Podes fazer login agora." };
     },
     {
       body: t.Object({
-        name: t.String(),
+        name: t.String({ minLength: 2, maxLength: 100 }),
         email: t.String({ format: "email" }),
-        password: t.String({ minLength: 6 }),
+        password: t.String({ minLength: 8 }),
       }),
+      detail: { summary: "Criar nova conta" },
     },
   )
 
-  /**
-   * LOGIN
-   * Valida credenciais e retorna o Token JWT.
-   */
   .post(
     "/login",
     async ({ body, jwt, set }) => {
-      const { email, password } = body;
-
-      // 1. Procurar o utilizador
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.email, email))
-        .limit(1);
-
-      if (!user) {
+      const user = await AuthService.findUserByEmail(body.email);
+      if (!user || !(await AuthService.verifyPassword(body.password, user.password))) {
         set.status = 401;
-        return { error: "Credenciais inválidas (Email não encontrado)." };
+        return { error: "Credenciais inválidas." };
       }
 
-      // 2. Verificar a senha encriptada
-      const isPasswordValid = await Bun.password.verify(
-        password,
-        user.password,
-      );
-
-      if (!isPasswordValid) {
-        set.status = 401;
-        return { error: "Credenciais inválidas (Senha incorreta)." };
-      }
-
-      // 3. Gerar o Token JWT com os dados do utilizador
-      const token = await jwt.sign({
-        sub: String(user.id), // 'sub' é o padrão para o ID do sujeito no JWT
+      const now = Math.floor(Date.now() / 1000);
+      const accessToken = await jwt.sign({
+        sub: String(user.id),
         role: user.role,
+        exp: now + env.JWT_EXPIRES_IN_SECONDS,
       });
+      const refreshToken = await AuthService.createRefreshToken(user.id);
 
       return {
         message: "Login efetuado com sucesso!",
-        token,
-        user: {
-          id: user.id,
-          name: user.name,
-          role: user.role,
-        },
+        accessToken,
+        refreshToken,
+        expiresIn: env.JWT_EXPIRES_IN_SECONDS,
+        user: { id: user.id, name: user.name, email: user.email, role: user.role },
       };
     },
     {
@@ -112,31 +58,144 @@ export const authRoutes = new Elysia({ prefix: "/auth" })
         email: t.String({ format: "email" }),
         password: t.String(),
       }),
+      detail: { summary: "Iniciar sessão" },
     },
   )
 
-  /**
-   * PERFIL (Rota Protegida)
-   * Demonstração de como obter dados do utilizador logado.
-   */
-  .get("/me", async ({ userId, set }) => {
-    if (!userId) {
-      set.status = 401;
-      return { error: "Não autenticado." };
-    }
+  .post(
+    "/refresh",
+    async ({ body, jwt, set }) => {
+      const rt = await AuthService.findRefreshToken(body.refreshToken);
+      if (!rt) {
+        set.status = 401;
+        return { error: "Refresh token inválido ou expirado." };
+      }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, Number(userId)))
-      .limit(1);
+      const user = await AuthService.findUserById(rt.userId);
+      if (!user) {
+        set.status = 401;
+        return { error: "Utilizador não encontrado." };
+      }
 
-    if (!user) {
-      set.status = 404;
-      return { error: "Utilizador não encontrado." };
-    }
+      // Rotacionar: revogar o atual e emitir novo par
+      await AuthService.revokeRefreshToken(body.refreshToken);
+      const now = Math.floor(Date.now() / 1000);
+      const accessToken = await jwt.sign({
+        sub: String(user.id),
+        role: user.role,
+        exp: now + env.JWT_EXPIRES_IN_SECONDS,
+      });
+      const newRefreshToken = await AuthService.createRefreshToken(user.id);
 
-    // Remover a password do retorno por segurança
-    const { password: _, ...userWithoutPassword } = user;
-    return userWithoutPassword;
-  });
+      return {
+        message: "Token renovado com sucesso!",
+        accessToken,
+        refreshToken: newRefreshToken,
+        expiresIn: env.JWT_EXPIRES_IN_SECONDS,
+      };
+    },
+    {
+      body: t.Object({ refreshToken: t.String() }),
+      detail: { summary: "Renovar access token usando refresh token" },
+    },
+  )
+
+  // ── Rotas protegidas por JWT ─────────────────────────────────────────────────
+  .use(authGuard)
+
+  .post(
+    "/logout",
+    async ({ body, userId }) => {
+      if (body?.refreshToken) {
+        await AuthService.revokeRefreshToken(body.refreshToken);
+      } else {
+        await AuthService.revokeAllUserTokens(userId!);
+      }
+      return { message: "Sessão terminada com sucesso." };
+    },
+    {
+      body: t.Optional(t.Object({ refreshToken: t.Optional(t.String()) })),
+      detail: { summary: "Terminar sessão", security: [{ bearerAuth: [] }] },
+    },
+  )
+
+  .get(
+    "/me",
+    async ({ userId, set }) => {
+      if (!userId) {
+        set.status = 401;
+        return { error: "Não autorizado." };
+      }
+      const user = await AuthService.findUserById(userId);
+      if (!user) {
+        set.status = 404;
+        return { error: "Utilizador não encontrado." };
+      }
+      const { password: _, ...profile } = user;
+      return profile;
+    },
+    {
+      detail: { summary: "Obter perfil do utilizador autenticado", security: [{ bearerAuth: [] }] },
+    },
+  )
+
+  .patch(
+    "/me",
+    async ({ userId, body, set }) => {
+      if (!userId) {
+        set.status = 401;
+        return { error: "Não autorizado." };
+      }
+      if (body.email) {
+        const existing = await AuthService.findUserByEmail(body.email);
+        if (existing && existing.id !== userId) {
+          set.status = 409;
+          return { error: "Este email já está em uso." };
+        }
+      }
+      const updated = await AuthService.updateProfile(userId, body);
+      if (!updated) {
+        set.status = 404;
+        return { error: "Utilizador não encontrado." };
+      }
+      const { password: _, ...profile } = updated;
+      return { message: "Perfil atualizado!", user: profile };
+    },
+    {
+      body: t.Object({
+        name: t.Optional(t.String({ minLength: 2, maxLength: 100 })),
+        email: t.Optional(t.String({ format: "email" })),
+      }),
+      detail: { summary: "Atualizar nome ou email", security: [{ bearerAuth: [] }] },
+    },
+  )
+
+  .patch(
+    "/me/password",
+    async ({ userId, body, set }) => {
+      if (!userId) {
+        set.status = 401;
+        return { error: "Não autorizado." };
+      }
+      const user = await AuthService.findUserById(userId);
+      if (!user) {
+        set.status = 404;
+        return { error: "Utilizador não encontrado." };
+      }
+      const valid = await AuthService.verifyPassword(body.currentPassword, user.password);
+      if (!valid) {
+        set.status = 400;
+        return { error: "Password atual incorreta." };
+      }
+      await AuthService.updatePassword(userId, body.newPassword);
+      await AuthService.revokeAllUserTokens(userId);
+      return { message: "Password alterada! Por favor, faça login novamente." };
+    },
+    {
+      body: t.Object({
+        currentPassword: t.String(),
+        newPassword: t.String({ minLength: 8 }),
+      }),
+      detail: { summary: "Alterar password", security: [{ bearerAuth: [] }] },
+    },
+  );
