@@ -1,11 +1,15 @@
 import { Elysia, t } from "elysia";
 import { authGuard } from "../middlewares/auth.guard";
+import { rateLimit } from "../middlewares/rate-limit";
 import { AuthService } from "../services/auth.service";
 import { env } from "../config/env";
 
+const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const ONE_HOUR = 60 * 60 * 1000;
+
 export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"] })
 
-  // ── Rotas públicas (sem autenticação) ───────────────────────────────────────
+  // ── Rotas públicas ──────────────────────────────────────────────────────────
   .post(
     "/register",
     async ({ body, set }) => {
@@ -19,6 +23,7 @@ export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"]
       return { message: "Conta criada com sucesso! Podes fazer login agora." };
     },
     {
+      beforeHandle: rateLimit({ max: 10, windowMs: ONE_HOUR, message: "Demasiados registos. Tente novamente em 1 hora." }),
       body: t.Object({
         name: t.String({ minLength: 2, maxLength: 100 }),
         email: t.String({ format: "email" }),
@@ -54,6 +59,7 @@ export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"]
       };
     },
     {
+      beforeHandle: rateLimit({ max: 10, windowMs: FIFTEEN_MINUTES, message: "Demasiadas tentativas de login. Tente novamente em 15 minutos." }),
       body: t.Object({
         email: t.String({ format: "email" }),
         password: t.String(),
@@ -77,7 +83,6 @@ export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"]
         return { error: "Utilizador não encontrado." };
       }
 
-      // Rotacionar: revogar o atual e emitir novo par
       await AuthService.revokeRefreshToken(body.refreshToken);
       const now = Math.floor(Date.now() / 1000);
       const accessToken = await jwt.sign({
@@ -95,6 +100,7 @@ export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"]
       };
     },
     {
+      beforeHandle: rateLimit({ max: 20, windowMs: FIFTEEN_MINUTES }),
       body: t.Object({ refreshToken: t.String() }),
       detail: { summary: "Renovar access token usando refresh token" },
     },
@@ -115,7 +121,22 @@ export const authRoutes = new Elysia({ prefix: "/auth", tags: ["Autenticação"]
     },
     {
       body: t.Optional(t.Object({ refreshToken: t.Optional(t.String()) })),
-      detail: { summary: "Terminar sessão", security: [{ bearerAuth: [] }] },
+      detail: { summary: "Terminar sessão atual", security: [{ bearerAuth: [] }] },
+    },
+  )
+
+  .post(
+    "/logout-all",
+    async ({ userId }) => {
+      await AuthService.revokeAllUserTokens(userId!);
+      return { message: "Todas as sessões foram terminadas com sucesso." };
+    },
+    {
+      detail: {
+        summary: "Terminar todas as sessões",
+        description: "Revoga todos os refresh tokens ativos do utilizador em todos os dispositivos.",
+        security: [{ bearerAuth: [] }],
+      },
     },
   )
 

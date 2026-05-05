@@ -29,7 +29,7 @@ const app = new Elysia()
             "- `to_watch` — Por Visualizar\n" +
             "- `watching` — A Visualizar\n" +
             "- `watched` — Visualizado\n\n" +
-            "**Autenticação:** Bearer Token JWT (válido 7 dias). Use `POST /auth/login` para obter o token.",
+            "**Autenticação:** Bearer Token JWT (válido 14 min). Use `POST /auth/login` para obter o token e `POST /auth/refresh` para renová-lo.",
         },
         components: {
           securitySchemes: {
@@ -43,13 +43,14 @@ const app = new Elysia()
         tags: [
           { name: "Autenticação", description: "Registo, login, refresh token e gestão de perfil" },
           { name: "Catálogo Público", description: "Pesquisa e consulta do catálogo (sem autenticação)" },
-          { name: "Biblioteca do Utilizador", description: "Gestão da biblioteca pessoal de filmes e séries" },
+          { name: "Biblioteca do Utilizador", description: "Gestão da biblioteca pessoal" },
           { name: "Administração", description: "Gestão do catálogo global (apenas administradores)" },
         ],
       },
     }),
   )
 
+  // ── Healthcheck ─────────────────────────────────────────────────────────────
   .get(
     "/",
     () => ({
@@ -67,10 +68,43 @@ const app = new Elysia()
     { detail: { summary: "Healthcheck", tags: ["Autenticação"] } },
   )
 
+  // ── Rotas ───────────────────────────────────────────────────────────────────
   .use(authRoutes)
   .use(usersRoutes)
   .use(adminRoutes)
   .use(catalogRoutes)
+
+  // ── Handler de erros global ─────────────────────────────────────────────────
+  .onError(({ code, error, set }) => {
+    if (env.NODE_ENV !== "production") {
+      console.error(`[${code}]`, error);
+    }
+
+    if (code === "VALIDATION") {
+      set.status = 422;
+      return {
+        error: "Dados inválidos",
+        message: "Os dados fornecidos não são válidos. Verifica os campos e tenta novamente.",
+        details: error.message,
+      };
+    }
+
+    if (code === "NOT_FOUND") {
+      set.status = 404;
+      return { error: "Not Found", message: "Rota não encontrada." };
+    }
+
+    if (code === "PARSE") {
+      set.status = 400;
+      return { error: "Bad Request", message: "Corpo da requisição inválido ou mal formatado." };
+    }
+
+    set.status = 500;
+    return {
+      error: "Internal Server Error",
+      message: "Ocorreu um erro inesperado. Tente novamente mais tarde.",
+    };
+  })
 
   .listen({ port: env.PORT, hostname: "0.0.0.0" });
 
