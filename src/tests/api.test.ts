@@ -64,7 +64,7 @@ describe("Autenticação", () => {
     expect(res.status).toBe(200);
     expect(accessToken).toBeDefined();
     expect(refreshToken).toBeDefined();
-    expect(data.expiresIn).toBe(7 * 24 * 60 * 60);
+    expect(data.expiresIn).toBe(14 * 60);
   });
 
   test("Deve renovar o token com o refreshToken", async () => {
