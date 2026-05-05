@@ -1,26 +1,26 @@
 import { Elysia, t } from "elysia";
-import { db, contents } from "../config/db"; // Ajustado para o teu caminho de importação
-import { adminGuard } from "../middlewares/admin.guard";
+import { db, contents } from "../config/db";
+import { authGuard } from "../middlewares/auth.guard";
 import { eq } from "drizzle-orm";
 
-/**
- * ROTAS DE ADMINISTRAÇÃO
- * Gerência do catálogo global de filmes e séries.
- */
 export const adminRoutes = new Elysia({ prefix: "/admin" })
-  // Aplica a verificação de Admin (podes comentar para testar sem token)
-  .use(adminGuard)
+  .use(authGuard)
+  .onBeforeHandle(({ userRole, set }: any) => {
+    if (userRole !== "admin") {
+      set.status = 403;
+      return {
+        error: "Forbidden",
+        message:
+          "Acesso negado. Esta funcionalidade é exclusiva para administradores.",
+        code: "ADMIN_REQUIRED",
+      };
+    }
+  })
 
-  /**
-   * LISTAR TODO O CATÁLOGO (Painel do Admin)
-   */
   .get("/content", async () => {
     return await db.select().from(contents);
   })
 
-  /**
-   * ADICIONAR CONTEÚDO
-   */
   .post(
     "/content",
     async ({ body, set }) => {
@@ -57,9 +57,6 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     },
   )
 
-  /**
-   * EDITAR CONTEÚDO
-   */
   .put(
     "/content/:id",
     async ({ params, body, set }) => {
@@ -90,9 +87,6 @@ export const adminRoutes = new Elysia({ prefix: "/admin" })
     },
   )
 
-  /**
-   * ELIMINAR CONTEÚDO
-   */
   .delete(
     "/content/:id",
     async ({ params, set }) => {

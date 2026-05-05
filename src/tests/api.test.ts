@@ -3,7 +3,7 @@ import { db } from "../config/db";
 import { users } from "../db/schema";
 import { eq } from "drizzle-orm";
 
-const BASE_URL = "http://localhost:3000";
+const BASE_URL = "http://localhost:5000";
 
 describe(" Suíte de Testes Integrais - Streaming API", () => {
   // Variáveis partilhadas entre testes
